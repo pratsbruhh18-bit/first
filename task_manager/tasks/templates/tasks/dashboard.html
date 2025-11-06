@@ -1,0 +1,102 @@
+{% extends 'tasks/base.html' %}
+
+{% block content %}
+<div class="mb-4">
+    <h3>Welcome, {{ user.username }} ({{ user.role|capfirst }})!</h3>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Your Tasks {% if filter %}- {{ filter|capfirst }}{% endif %}</h2>
+
+    {# Show "New Task" button only for roles allowed to create tasks #}
+    {% if user.role == "admin" or user.role == "supervisor" or user.role == "user" or user.role == "operator" %}
+        {% if user.role != "hod" %}
+            <a href="{% url 'task_create' %}" class="btn btn-success">+ New Task</a>
+        {% endif %}
+    {% endif %}
+</div>
+
+<div class="mb-3">
+    <a href="{% url 'dashboard' %}" class="btn btn-outline-primary {% if filter == 'all' %}active{% endif %}">All</a>
+    <a href="{% url 'completed_tasks' %}" class="btn btn-outline-success {% if filter == 'completed' %}active{% endif %}">Completed</a>
+    <a href="{% url 'pending_tasks' %}" class="btn btn-outline-warning {% if filter == 'pending' %}active{% endif %}">Pending</a>
+</div>
+
+{% if tasks %}
+<table class="table table-hover">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Assigned To</th>
+            <th>Role</th>
+            <th>Due Date</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for task in tasks %}
+        <tr>
+            <td>{{ task.title }}</td>
+            <td>{{ task.user.username }}</td>
+            <td>{{ task.user.role|capfirst }}</td>
+            <td>{% if task.due_date %}{{ task.due_date }}{% else %}<em>None</em>{% endif %}</td>
+            <td>
+                {% if task.completed %}
+                    <span class="badge bg-success">Completed</span>
+                {% else %}
+                    <span class="badge bg-warning text-dark">Pending</span>
+                {% endif %}
+            </td>
+            <td class="d-flex gap-1">
+                {# Edit button: admin can edit all, supervisor can edit operator tasks, user/operator can edit own tasks #}
+                {% if user.role == "admin" %}
+                    <a href="{% url 'task_edit' task.pk %}" class="btn btn-sm btn-primary">Edit</a>
+                {% elif task.user == user %}
+                    <a href="{% url 'task_edit' task.pk %}" class="btn btn-sm btn-primary">Edit</a>
+                {% elif user.role == "supervisor" and task.user.role == "operator" %}
+                    <a href="{% url 'task_edit' task.pk %}" class="btn btn-sm btn-primary">Edit</a>
+                {% endif %}
+
+                {# Delete button: same logic as edit #}
+                {% if user.role == "admin" %}
+                    <form method="POST" action="{% url 'task_delete' task.pk %}" style="display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-danger" 
+                                onclick="return confirm('Are you sure you want to delete this task?');">
+                            Delete
+                        </button>
+                    </form>
+                {% elif task.user == user %}
+                    <form method="POST" action="{% url 'task_delete' task.pk %}" style="display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-danger" 
+                                onclick="return confirm('Are you sure you want to delete this task?');">
+                            Delete
+                        </button>
+                    </form>
+                {% elif user.role == "supervisor" and task.user.role == "operator" %}
+                    <form method="POST" action="{% url 'task_delete' task.pk %}" style="display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-danger" 
+                                onclick="return confirm('Are you sure you want to delete this task?');">
+                            Delete
+                        </button>
+                    </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No tasks found. 
+   {% if user.role == "admin" or user.role == "supervisor" or user.role == "user" or user.role == "operator" %}
+       {% if user.role != "hod" %}
+           <a href="{% url 'task_create' %}">Create your first task.</a>
+       {% endif %}
+   {% endif %}
+</p>
+{% endif %}
+
+{% endblock %}

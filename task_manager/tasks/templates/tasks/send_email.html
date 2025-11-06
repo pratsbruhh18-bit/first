@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>📧 Send Email for Task: {{ task.title }}</h2>
+    <p>Assigned to: <strong>{{ task.user.username }}</strong> ({{ task.user.email }})</p>
+
+    <form method="POST">
+        {% csrf_token %}
+
+        <!-- Premade template dropdown -->
+        <div class="mb-3">
+            <label for="email_template" class="form-label">Choose a Template</label>
+            <select name="email_template" id="email_template" class="form-select">
+                <option value="">-- Select Template (optional) --</option>
+                {% for template in templates %}
+                    <option value="{{ template.id }}">{{ template.name }}</option>
+                {% empty %}
+                    <option disabled>No templates available</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <hr>
+
+        <!-- Custom subject -->
+        <div class="mb-3">
+            <label for="custom_subject" class="form-label">Custom Subject (optional)</label>
+            <input type="text" name="custom_subject" id="custom_subject" class="form-control" placeholder="Enter subject (overrides template)">
+        </div>
+
+        <!-- Custom message -->
+        <div class="mb-3">
+            <label for="custom_message" class="form-label">Custom Message (optional)</label>
+            <textarea name="custom_message" id="custom_message" class="form-control" rows="5" placeholder="Enter custom message (overrides template body)"></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Send Email</button>
+        <a href="{% url 'task_edit' task.pk %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}

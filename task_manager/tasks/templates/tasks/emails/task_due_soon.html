@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Task Reminder</title>
+</head>
+<body>
+    <p>Hey {{ user.username }},</p>
+    <p>Your task "<strong>{{ task.title }}</strong>" is due on {{ task.due_date|date:"Y-m-d" }}.</p>
+    <p>{{ custom_message }}</p>
+    <p>Don't forget to complete it!</p>
+</body>
+</html>
+

@@ -1,0 +1,35 @@
+{% extends 'tasks/base.html' %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-7">
+    <h3>Send email for: {{ task.title }}</h3>
+
+    <form method="post">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+
+      <div class="mb-3">
+        {{ form.template.label_tag }}<br>
+        {{ form.template }}
+      </div>
+
+      <hr>
+
+      <div class="mb-3">
+        {{ form.custom_subject.label_tag }}
+        {{ form.custom_subject }}
+        <small class="form-text text-muted">Optional — overrides template subject.</small>
+      </div>
+
+      <div class="mb-3">
+        {{ form.custom_message.label_tag }}
+        {{ form.custom_message }}
+        <small class="form-text text-muted">Optional — overrides template body.</small>
+      </div>
+
+      <button type="submit" class="btn btn-success">Send Email</button>
+      <a href="{% url 'task_edit' task.id %}" class="btn btn-link">Back to Task</a>
+    </form>
+  </div>
+</div>
+{% endblock %}
