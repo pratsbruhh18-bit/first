@@ -1,7 +1,7 @@
-from django.urls import path
-from . import views
-from .views import CustomTokenObtainPairView
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
+from . import views
 from .views import (
     TaskListCreateAPI,
     TaskDetailAPI,
@@ -10,8 +10,15 @@ from .views import (
     UserRegistrationAPI,
     UserLoginAPI,
     AssignableUsersAPI,
+    DepartmentViewSet,
+    CustomTokenObtainPairView,
 )
 
+# ------------------------------------
+# Router for ViewSets
+# ------------------------------------
+router = DefaultRouter()
+router.register(r'api/departments', DepartmentViewSet, basename='department')
 
 urlpatterns = [
     # HTML Views
@@ -28,18 +35,19 @@ urlpatterns = [
     path('task/<int:pk>/delete/', views.task_delete, name='task_delete'),
 
     # DRF API Views
-    path('api/tasks/', views.TaskListCreateAPI.as_view(), name='api_task_list_create'),
-    path('api/tasks/<int:pk>/', views.TaskDetailAPI.as_view(), name='api_task_detail'),
-    path('api/email-templates/', views.EmailTemplateListAPI.as_view(), name='api_email_templates'),
-    path('api/send-email/', views.SendEmailAPI.as_view(), name='api_send_email'),
+    path('api/tasks/', TaskListCreateAPI.as_view(), name='api_task_list_create'),
+    path('api/tasks/<int:pk>/', TaskDetailAPI.as_view(), name='api_task_detail'),
+    path('api/email-templates/', EmailTemplateListAPI.as_view(), name='api_email_templates'),
+    path('api/send-email/', SendEmailAPI.as_view(), name='api_send_email'),
     path('api/register/', UserRegistrationAPI.as_view(), name='api_register'),
     path('api/login/', UserLoginAPI.as_view(), name='api_login'),
     path('api/employees/', views.EmployeeListAPI.as_view(), name='api_employees'),
     path('employee/', AssignableUsersAPI.as_view(), name='assignable-users'),
-    path("tasks/<int:pk>/", TaskDetailAPI.as_view(), name="task-detail"),
 
-    #path('api/profile/', views.UserProfileAPI.as_view(), name='api_profile'),
-    path("api/token/", CustomTokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path('api/token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+
+
+    # Department endpoints
+    path('', include(router.urls)),  # 🔥 connects all ViewSets including departments
 ]
-

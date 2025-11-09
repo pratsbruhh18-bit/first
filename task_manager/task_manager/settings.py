@@ -31,7 +31,6 @@ INSTALLED_APPS = [
     'celery',
     'django_celery_beat',
     'corsheaders',
-    'django_filters',
     
 ]
 
@@ -152,6 +151,7 @@ AUTH_USER_MODEL = 'tasks.CustomUser'
 CORS_ALLOWED_ORIGINS =[
     "http://localhost:3000",
     "http://192.168.1.65:3000",
+    "http://192.168.1.76:3000",
 ]
 # Allow credentials (cookies, authorization headers)
 CORS_ALLOW_CREDENTIALS = True

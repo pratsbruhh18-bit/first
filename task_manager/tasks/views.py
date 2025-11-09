@@ -15,6 +15,15 @@ from .permissions import IsAdminHODSupervisorOrAssigned
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from .pagination import TaskLimitOffsetPagination
+from django.db.models import Count
+
+# -------------------------------
+# Department Views
+# -------------------------------
+from .models import Department
+from .serializers import DepartmentSerializer
+from rest_framework import viewsets
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 
 # DRF & Auth
 from rest_framework.authtoken.models import Token
@@ -314,47 +323,69 @@ class TaskListCreateAPI(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Task.objects.select_related('user').prefetch_related('assigned_to')
+        queryset = Task.objects.select_related('user', 'department').prefetch_related('assigned_to')
 
         # === ROLE-BASED VISIBILITY ONLY ===
         if user.is_staff or user.role == "admin":
             role_queryset = queryset
         elif user.role in ["hod", "supervisor"]:
             role_queryset = queryset.filter(Q(assigned_to=user) | Q(user=user)).distinct()
-        else:  # normal user
+        else:
             role_queryset = queryset.filter(assigned_to=user)
 
-        # --- STORE COUNTS BEFORE QUERY PARAM FILTERING ---
+        # === APPLY QUERY PARAM FILTERS ===
+        department_id = self.request.query_params.get("department")
+        status = self.request.query_params.get("status")
+        assigned_to = self.request.query_params.get("assigned_to")
+        created_by = self.request.query_params.get("user")
+        completed_by = self.request.query_params.get("completed_by")
+
+        if department_id:
+            role_queryset = role_queryset.filter(department__id=department_id)
+        if status:
+            role_queryset = role_queryset.filter(status__iexact=status)
+        if assigned_to:
+            role_queryset = role_queryset.filter(assigned_to__id=assigned_to)
+        if created_by:
+            role_queryset = role_queryset.filter(user__id=created_by)
+        if completed_by:
+            role_queryset = role_queryset.filter(completed_by__id=completed_by)
+
+        # --- STORE OVERALL COUNTS ---
         self.total_count = role_queryset.count()
         self.pending_count = role_queryset.filter(status='pending').count()
         self.completed_count = role_queryset.filter(status='completed').count()
 
-        # === APPLY QUERY PARAM FILTERS ===
-        status = self.request.query_params.get("status")
-        if status:
-            role_queryset = role_queryset.filter(status__iexact=status)
+        # --- CALCULATE DEPARTMENT COUNTS INCLUDING EMPTY DEPARTMENTS ---
+        all_departments = Department.objects.all()
+        dept_counts_query = (
+            role_queryset
+            .values('department__id', 'department__name')
+            .annotate(
+                total=Count('id'),
+                pending=Count('id', filter=Q(status='pending')),
+                completed=Count('id', filter=Q(status='completed'))
+            )
+        )
+        dept_counts_dict = {d['department__id']: d for d in dept_counts_query}
 
-        assigned_to = self.request.query_params.get("assigned_to")
-        if assigned_to:
-            role_queryset = role_queryset.filter(assigned_to__id=assigned_to)
-
-        created_by = self.request.query_params.get("user")
-        if created_by:
-            role_queryset = role_queryset.filter(user__id=created_by)
-
-        completed_by = self.request.query_params.get("completed_by")
-        if completed_by:
-            role_queryset = role_queryset.filter(completed_by__id=completed_by)
+        self.department_counts = {}
+        for dept in all_departments:
+            counts = dept_counts_dict.get(dept.id, {'total': 0, 'pending': 0, 'completed': 0})
+            self.department_counts[dept.name] = counts
 
         return role_queryset.order_by("-created_at")
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
-        # Add counts to response
+        # Attach overall counts
         response.data['total_count'] = self.total_count
         response.data['pending_count'] = self.pending_count
         response.data['completed_count'] = self.completed_count
+        # Attach counts per department
+        response.data['department_counts'] = self.department_counts
         return response
+
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -403,39 +434,83 @@ class TaskListCreateAPI(generics.ListCreateAPIView):
                 except Exception as e:
                     print(f"Email send error: {e}")
 
-# ------------------ Task Detail API ------------------
-class TaskDetailAPI(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Task.objects.all()
-    serializer_class = TaskSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdminHODSupervisorOrAssigned]
+class DepartmentViewSet(viewsets.ModelViewSet):
+    """
+    Full CRUD for Department model.
+    - Admins & HODs → can create, update, delete.
+    - Everyone authenticated → can read.
+    """
+    queryset = Department.objects.all().order_by("name")
+    serializer_class = DepartmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if user.role not in ["admin", "hod"]:
+            raise PermissionDenied("Only Admins or HODs can create departments.")
+        serializer.save()
 
     def perform_update(self, serializer):
         user = self.request.user
+        if user.role not in ["admin", "hod"]:
+            raise PermissionDenied("Only Admins or HODs can update departments.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if user.role not in ["admin", "hod"]:
+            raise PermissionDenied("Only Admins or HODs can delete departments.")
+        instance.delete()
+
+# ------------------ Task Detail API ------------------
+class TaskDetailAPI(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET: Retrieve task with subtasks, department, assigned users
+    PUT/PATCH: Update task including reassign and subtasks
+    DELETE: Delete task if permitted
+    """
+    queryset = Task.objects.select_related('user', 'department', 'completed_by').prefetch_related('assigned_to', 'subtasks')
+    serializer_class = TaskSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        task = super().get_object()
+        user = self.request.user
+
+        # Restrict access by role
+        if user.role in ['operator', 'user'] and task.user != user and user not in task.assigned_to.all():
+            raise PermissionDenied("You do not have access to this task.")
+        return task
+
+    def perform_update(self, serializer):
+        task = serializer.instance
+        user = self.request.user
+
         assigned_ids = self.request.data.get("assigned_to_ids", [])
         assigned_users = list(User.objects.filter(id__in=assigned_ids)) if assigned_ids else []
 
-        # Track previous states
-        prev_completed = serializer.instance.completed
-        prev_title = serializer.instance.title
-        prev_description = serializer.instance.description
-        prev_due_date = serializer.instance.due_date
+        # Track previous values
+        prev_completed = task.completed
+        prev_title = task.title
+        prev_description = task.description
+        prev_due_date = task.due_date
 
-        # Role-based validation and save
+        # ROLE-BASED VALIDATION
         if user.role == "admin":
             serializer.save()
         elif user.role == "hod":
-            if serializer.instance.user != user and user not in serializer.instance.assigned_to.all():
+            if task.user != user and user not in task.assigned_to.all():
                 raise PermissionDenied("HOD cannot edit this task.")
             serializer.save()
         elif user.role == "supervisor":
-            if serializer.instance.user != user and user not in serializer.instance.assigned_to.all():
+            if task.user != user and user not in task.assigned_to.all():
                 raise PermissionDenied("Supervisor cannot edit this task.")
             for u in assigned_users:
                 if u != user and u.role not in ["hod", "user"]:
                     raise PermissionDenied("Supervisor can only assign tasks to HOD or user.")
             serializer.save()
         elif user.role == "user":
-            if serializer.instance.user != user and user not in serializer.instance.assigned_to.all():
+            if task.user != user and user not in task.assigned_to.all():
                 raise PermissionDenied("You cannot update this task.")
             if assigned_users and any(u != user for u in assigned_users):
                 raise PermissionDenied("Users can only assign tasks to themselves.")
@@ -445,25 +520,45 @@ class TaskDetailAPI(generics.RetrieveUpdateDestroyAPIView):
 
         # Update assigned users if provided
         if assigned_users:
-            serializer.instance.assigned_to.set(assigned_users)
+            task.assigned_to.set(assigned_users)
 
-        # Send HTML email to assigned users if task details changed
+        # Handle subtasks if provided
+        subtasks_data = self.request.data.get('subtasks', [])
+        for subtask_data in subtasks_data:
+            subtask_id = subtask_data.get('id')
+            if subtask_id:
+                subtask = Task.objects.filter(id=subtask_id, parent_task=task).first()
+                if subtask:
+                    for attr, value in subtask_data.items():
+                        if attr != 'id':
+                            setattr(subtask, attr, value)
+                    subtask.save()
+            else:
+                Task.objects.create(
+                    title=subtask_data.get('title'),
+                    description=subtask_data.get('description'),
+                    user=task.user,
+                    department=task.department,
+                    parent_task=task
+                )
+
+        # Send email if task details changed
         if user.role in ["admin", "supervisor"] and (
-            prev_title != serializer.instance.title or
-            prev_description != serializer.instance.description or
-            prev_due_date != serializer.instance.due_date
+            prev_title != task.title or
+            prev_description != task.description or
+            prev_due_date != task.due_date
         ):
-            assigned_emails = [u.email for u in serializer.instance.assigned_to.all() if u.email]
+            assigned_emails = [u.email for u in task.assigned_to.all() if u.email]
             if assigned_emails:
-                subject = f"Task Updated: {serializer.instance.title}"
+                subject = f"Task Updated: {task.title}"
                 html_content = f"""
 <html>
   <body>
     <p>Hello,</p>
     <p>The task assigned to you has been updated by <strong>{user.username}</strong>.</p>
-    <p><strong>Task:</strong> {serializer.instance.title}<br>
-       <strong>Description:</strong> {serializer.instance.description or 'No description'}<br>
-       <strong>Due Date:</strong> {serializer.instance.due_date or 'Not specified'}</p>
+    <p><strong>Task:</strong> {task.title}<br>
+       <strong>Description:</strong> {task.description or 'No description'}<br>
+       <strong>Due Date:</strong> {task.due_date or 'Not specified'}</p>
     <p>Please log in to your dashboard to view updated details.</p>
     <p>Regards,<br>Task Manager System</p>
   </body>
@@ -473,19 +568,19 @@ class TaskDetailAPI(generics.RetrieveUpdateDestroyAPIView):
                 email.attach_alternative(html_content, "text/html")
                 email.send(fail_silently=True)
 
-        # Send HTML email to task creator if task is marked completed
-        if not prev_completed and serializer.instance.completed:
-            assigner = serializer.instance.user
+        # Send email to creator if task marked completed
+        if not prev_completed and task.completed:
+            assigner = task.user
             if assigner.email:
-                subject = f"Task Completed: {serializer.instance.title}"
+                subject = f"Task Completed: {task.title}"
                 html_content = f"""
 <html>
   <body>
     <p>Hello {assigner.username},</p>
     <p>The task you assigned has been marked as completed by <strong>{user.username}</strong>.</p>
-    <p><strong>Task:</strong> {serializer.instance.title}<br>
-       <strong>Description:</strong> {serializer.instance.description or 'No description'}<br>
-       <strong>Due Date:</strong> {serializer.instance.due_date or 'Not specified'}</p>
+    <p><strong>Task:</strong> {task.title}<br>
+       <strong>Description:</strong> {task.description or 'No description'}<br>
+       <strong>Due Date:</strong> {task.due_date or 'Not specified'}</p>
     <p>Please check your dashboard for details.</p>
     <p>Regards,<br>Task Manager System</p>
   </body>
@@ -495,9 +590,10 @@ class TaskDetailAPI(generics.RetrieveUpdateDestroyAPIView):
                 email.attach_alternative(html_content, "text/html")
                 email.send(fail_silently=True)
 
-
     def perform_destroy(self, instance):
         user = self.request.user
+
+        # DELETE PERMISSIONS
         if user.role == "admin":
             instance.delete()
         elif user.role in ["hod", "supervisor"] and (instance.user == user or instance.assigned_to.filter(id=user.id).exists()):
@@ -663,3 +759,131 @@ class TaskFilterAPI(generics.ListAPIView):
 
         return qs
 
+class DashboardTaskAPI(generics.ListCreateAPIView):
+    """
+    Dashboard API: list tasks with subtasks, counts per department,
+    and support inline updates (assign/reassign/subtasks).
+    """
+    serializer_class = TaskSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = Task.objects.select_related('user', 'department', 'completed_by').prefetch_related('assigned_to', 'subtasks')
+
+        # --- Role-based filtering ---
+        if user.is_staff or user.role == "admin":
+            role_queryset = queryset
+        elif user.role in ["hod", "supervisor"]:
+            role_queryset = queryset.filter(Q(assigned_to=user) | Q(user=user)).distinct()
+        else:  # normal user/operator
+            role_queryset = queryset.filter(assigned_to=user)
+
+        # --- Query param filters ---
+        department_id = self.request.query_params.get("department")
+        status = self.request.query_params.get("status")
+        assigned_to = self.request.query_params.get("assigned_to")
+        created_by = self.request.query_params.get("user")
+        completed_by = self.request.query_params.get("completed_by")
+
+        if department_id:
+            role_queryset = role_queryset.filter(department__id=department_id)
+        if status:
+            role_queryset = role_queryset.filter(status__iexact=status)
+        if assigned_to:
+            role_queryset = role_queryset.filter(assigned_to__id=assigned_to)
+        if created_by:
+            role_queryset = role_queryset.filter(user__id=created_by)
+        if completed_by:
+            role_queryset = role_queryset.filter(completed_by__id=completed_by)
+
+        # --- Store counts ---
+        self.total_count = role_queryset.count()
+        self.pending_count = role_queryset.filter(status='pending').count()
+        self.completed_count = role_queryset.filter(status='completed').count()
+
+        # --- Department counts ---
+        all_departments = Department.objects.all()
+        dept_counts_query = (
+            role_queryset
+            .values('department__id', 'department__name')
+            .annotate(
+                total=Count('id'),
+                pending=Count('id', filter=Q(status='pending')),
+                completed=Count('id', filter=Q(status='completed'))
+            )
+        )
+        dept_counts_dict = {d['department__id']: d for d in dept_counts_query}
+        self.department_counts = {}
+        for dept in all_departments:
+            counts = dept_counts_dict.get(dept.id, {'total': 0, 'pending': 0, 'completed': 0})
+            self.department_counts[dept.name] = counts
+
+        return role_queryset.order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        # Attach counts
+        response.data['total_count'] = self.total_count
+        response.data['pending_count'] = self.pending_count
+        response.data['completed_count'] = self.completed_count
+        response.data['department_counts'] = self.department_counts
+        return response
+
+    def perform_create(self, serializer):
+        """
+        For creating tasks directly from the dashboard API
+        """
+        task = serializer.save(user=self.request.user)
+
+        # Send email to assigned users
+        assigned_emails = [u.email for u in task.assigned_to.all() if u.email]
+        if assigned_emails:
+            subject = f"New Task Assigned: {task.title}"
+            html_content = f"""
+<html>
+  <body>
+    <p>Hello,</p>
+    <p>A new task has been assigned to you by <strong>{self.request.user.username}</strong>.</p>
+    <p><strong>Task:</strong> {task.title}<br>
+       <strong>Description:</strong> {task.description or 'No description'}<br>
+       <strong>Due Date:</strong> {task.due_date or 'Not specified'}</p>
+    <p>Please check your dashboard for details.</p>
+    <p>Regards,<br>Task Manager System</p>
+  </body>
+</html>
+"""
+            email = EmailMultiAlternatives(subject, "", settings.DEFAULT_FROM_EMAIL, assigned_emails)
+            email.attach_alternative(html_content, "text/html")
+            email.send(fail_silently=True)
+
+    def update(self, request, *args, **kwargs):
+        """
+        Support inline updates: task fields, assign/reassign, subtasks
+        """
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        # Handle subtasks inline
+        subtasks_data = request.data.get('subtasks', [])
+        for subtask_data in subtasks_data:
+            subtask_id = subtask_data.get('id')
+            if subtask_id:
+                subtask = Task.objects.filter(id=subtask_id, parent=instance).first()
+                if subtask:
+                    for attr, value in subtask_data.items():
+                        if attr != 'id':
+                            setattr(subtask, attr, value)
+                    subtask.save()
+            else:
+                Task.objects.create(
+                    title=subtask_data.get('title'),
+                    description=subtask_data.get('description'),
+                    user=instance.user,
+                    department=instance.department,
+                    parent=instance
+                )
+
+        return Response(serializer.data)
